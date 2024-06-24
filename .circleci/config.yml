@@ -43,7 +43,7 @@ commands:
       - run:
           name: Setup Environment Variables
           command: |
-            if [[ $CIRCLE_BRANCH == "master" ]] ; then
+            if [[ $CIRCLE_BRANCH == "master" && << pipeline.parameters.non-default-partition >> == "false" ]] ; then
               echo "export TINYBIRD_PYTEST_ARGS='--report-to-tinybird '" >> $BASH_ENV
             fi
             if << pipeline.parameters.randomize-aws-credentials >> ; then
@@ -713,6 +713,8 @@ jobs:
 
             if << pipeline.parameters.randomize-aws-credentials >> ; then
               TINYBIRD_WORKFLOW=tests_circleci_ma_mr
+            elif << pipeline.parameters.non-default-partition >> ; then
+              echo 'Disable tinybird reporting for partition tests for now'
             else
               TINYBIRD_WORKFLOW=tests_circleci
             fi
