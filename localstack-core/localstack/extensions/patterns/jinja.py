@@ -4,13 +4,11 @@ import mimetypes
 import typing as t
 from functools import cached_property
 
-from rolo.gateway import HandlerChain
-from rolo.router import RuleAdapter, WithHost
-from werkzeug.routing import Submount
+from rolo.router import RuleAdapter
 
 from localstack import config
-from localstack.aws.api import RequestContext
-from localstack.extensions.api import Extension, http
+from localstack.extensions.api import http
+from localstack.extensions.patterns.baseui import WebAppBaseExtension
 
 if t.TYPE_CHECKING:
     # although jinja2 is included transitively via moto, let's make sure jinja2 stays optional
@@ -21,7 +19,7 @@ LOG = logging.getLogger(__name__)
 _default = object()
 
 
-class WebAppExtension(Extension):
+class JinjaExtension(WebAppBaseExtension):
     """
     EXPERIMENTAL! This class is experimental and the API may change without notice.
 
@@ -71,13 +69,13 @@ class WebAppExtension(Extension):
     """
 
     def __init__(
-        self,
-        mount: str = None,
-        submount: str | None = _default,
-        subdomain: str | None = _default,
-        template_package_path: str | None = _default,
-        static_package_path: str | None = _default,
-        static_url_path: str = None,
+            self,
+            mount: str = None,
+            submount: str | None = _default,
+            subdomain: str | None = _default,
+            template_package_path: str | None = _default,
+            static_package_path: str | None = _default,
+            static_url_path: str = None,
     ):
         """
         Overwrite to customize your extension. For example, you can disable certain behavior by calling
@@ -98,10 +96,7 @@ class WebAppExtension(Extension):
             ``<extension-module>.static``.
         :param static_url_path: the URL path to serve static files from (defaults to `/static`)
         """
-        mount = mount or self.name
-
-        self.submount = f"/_extension/{mount}" if submount is _default else submount
-        self.subdomain = mount if subdomain is _default else subdomain
+        super().__init__(mount=mount, submount=submount, subdomain=subdomain)
 
         self.template_package_path = (
             "templates" if template_package_path is _default else template_package_path
@@ -232,102 +227,12 @@ class WebAppExtension(Extension):
             except ModuleNotFoundError:
                 LOG.warning("disabling static resources for extension %s", self.name)
 
-    def _preprocess_request(
-        self, chain: HandlerChain, context: RequestContext, _response: http.Response
-    ):
-        """
-        Default pre-processor, which implements a default behavior to add a trailing slash to the path if the
-        submount is used directly. For instance ``/_extension/my-extension``, then it forwards to
-        ``/_extension/my-extension/``. This is so you can reference relative paths like ``<link
-        href="static/style.css">`` in your HTML safely, and it will work with both subdomain and submount.
-        """
-        path = context.request.path
-
-        if path == self.submount.rstrip("/"):
-            chain.respond(301, headers={"Location": context.request.url + "/"})
-
-    def update_gateway_routes(self, router: http.Router[http.RouteHandler]):
-        from localstack.aws.handlers import preprocess_request
-
-        if self.submount:
-            preprocess_request.append(self._preprocess_request)
-
-        # adding self here makes sure that any ``@route`` decorators to the extension are mapped automatically
-        routes = [self]
-
+    def _add_superclass_routes(self, routes: list[t.Any]):
         if self.static_resource_module:
             routes.append(
                 RuleAdapter(f"{self.static_url_path}/<path:path>", self._serve_static_file)
             )
 
-        self.collect_routes(routes)
-
-        app = RuleAdapter(routes)
-
-        if self.submount:
-            router.add(Submount(self.submount, [app]))
-            LOG.info(
-                "%s extension available at %s%s",
-                self.name,
-                config.external_service_url(),
-                self.submount,
-            )
-
-        if self.subdomain:
-            router.add(WithHost(f"{self.subdomain}.<__host__>", [app]))
-            self._configure_cors_for_subdomain()
-            LOG.info(
-                "%s extension available at %s",
-                self.name,
-                config.external_service_url(subdomains=self.subdomain),
-            )
-
     def _serve_static_file(self, _request: http.Request, path: str):
         """Route for serving static files, for ``/_extension/my-extension/static/<path:path>``."""
         return http.Response.for_resource(self.static_resource_module, path)
-
-    def _configure_cors_for_subdomain(self):
-        """
-        Automatically configures CORS for the subdomain, for both HTTP and HTTPS.
-        """
-        from localstack.aws.handlers.cors import ALLOWED_CORS_ORIGINS
-
-        for protocol in ("http", "https"):
-            url = self.get_subdomain_url(protocol)
-            LOG.debug("adding %s to ALLOWED_CORS_ORIGINS", url)
-            ALLOWED_CORS_ORIGINS.append(url)
-
-    def get_subdomain_url(self, protocol: str = "https") -> str:
-        """
-        Returns the URL that serves the extension under its subdomain
-        ``https://my-extension.localhost.localstack.cloud:4566/``.
-
-        :return: a URL this extension is served at
-        """
-        if not self.subdomain:
-            raise ValueError(f"Subdomain for extension {self.name} is not set")
-        return config.external_service_url(subdomains=self.subdomain, protocol=protocol)
-
-    def get_submount_url(self, protocol: str = "https") -> str:
-        """
-        Returns the URL that serves the extension under its submount
-        ``https://localhost.localstack.cloud:4566/_extension/my-extension``.
-
-        :return: a URL this extension is served at
-        """
-
-        if not self.submount:
-            raise ValueError(f"Submount for extension {self.name} is not set")
-
-        return f"{config.external_service_url(protocol=protocol)}{self.submount}"
-
-    @classmethod
-    def get_extension_module_root(cls) -> str:
-        """
-        Returns the root of the extension module. For instance, if the extension lives in
-        ``my_extension/plugins/extension.py``, then this will return ``my_extension``. Used to set up the
-        logger as well as the template environment and the static file module.
-
-        :return: the root module the extension lives in
-        """
-        return cls.__module__.split(".")[0]
