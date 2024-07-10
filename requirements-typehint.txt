@@ -785,3 +785,4 @@ zope-interface==6.4.post2
 # The following packages are considered to be unsafe in a requirements file:
 # localstack-core
 # setuptools
+zipp>=3.19.1 # not directly required, pinned by Snyk to avoid a vulnerability
